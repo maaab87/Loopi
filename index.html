@@ -116,7 +116,7 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
 .ver{text-align:center;font-size:12px;color:var(--soft)}
 .micOverlay{position:fixed;left:50%;top:14px;transform:translateX(-50%);width:min(320px,90vw);display:none;flex-direction:column;align-items:center;gap:6px;background:rgba(43,35,64,.92);color:#fff;border-radius:22px;padding:14px 16px;z-index:6;pointer-events:none}
 .micOverlay.live{background:rgba(255,77,94,.95)}
-.micOverlay .big{font-size:64px;font-weight:800;line-height:1}
+.micOverlay .big{font-size:56px;font-weight:800;line-height:1}
 .micOverlay .sub{font-size:18px;font-weight:800;text-align:center}
 .micOverlay .lvl,.micOverlay .prog{width:100%;height:10px;border-radius:5px;background:rgba(255,255,255,.25);overflow:hidden}
 .micOverlay .lvl i{display:block;height:100%;width:0;background:#7CFF9B;transition:width .05s}
@@ -191,9 +191,9 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
     <button class="tool" id="undoBtn">↩️ Rückgängig</button>
     <button class="tool" id="clearAllBtn">🧹 Alles löschen</button>
   </div>
-  <div class="ver">Loopi · Version 8</div>
+  <div class="ver">Loopi · Version 9<br><span id="diagLine"></span></div>
 </div>
-<div class="micOverlay" id="micOverlay"><div class="big"></div><div class="sub"></div><div class="lvl"><i></i></div><div class="prog"><i></i></div><div class="hint">Pegel zeigt, ob das Mikro dich hört</div></div>
+<div class="micOverlay" id="micOverlay"><div class="big"></div><div class="sub"></div><div class="lvl"><i></i></div><div class="prog"><i></i></div><div class="hint">Grüner Balken = das Mikro hört dich</div></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -374,7 +374,7 @@ async function loadCustom(i, file){
 /* ================= Mikrofon ================= */
 let micWanted = false;
 let micStream = null, micSrc = null, micProc = null, micChunks = [], micMode = null, micShown = '';
-let micLevel = 0, lastMicData = 0;
+let micLevel = 0, lastMicData = 0, micClock = null, lastDiag = '';
 function micAlive(){
   if (!micStream || !micProc) return false;
   const tr = micStream.getAudioTracks()[0];
@@ -406,7 +406,7 @@ async function getMic(){
     const silent = ctx.createGain(); silent.gain.value = 0;
     micSrc.connect(micProc); micProc.connect(silent); silent.connect(ctx.destination);
     micProc.onaudioprocess = onMic;
-    micStream = stream;
+    micStream = stream; micClock = null;
     const tr = stream.getAudioTracks()[0];
     if (tr) tr.addEventListener('ended', resetMic);
     lastMicData = performance.now();
@@ -453,10 +453,16 @@ function onMic(e){
   lastMicData = performance.now();
   let sum = 0; for (let i = 0; i < d.length; i += 4) sum += d[i] * d[i];
   micLevel = Math.max(Math.sqrt(sum / (d.length / 4)) * 4, micLevel * 0.85);
+  // Zeitstempel: lückenlos fortzählen (Safari liefert Blöcke verspätet/in Schüben);
+  // nur bei großer Abweichung neu ausrichten
+  const dur = d.length / ctx.sampleRate;
+  let est = (typeof e.playbackTime === 'number' && e.playbackTime > 0) ? e.playbackTime - dur : now - dur;
+  if (micClock === null || Math.abs(micClock - est) > 0.35) micClock = est;
+  const t0 = micClock; micClock += dur;
   if (!micMode) return;
-  micChunks.push({t0: now - d.length / ctx.sampleRate, data: new Float32Array(d)});
-  if (micMode.type === 'slot' && now - micMode.t > 3) finishSlot();
-  else if (micMode.type === 'loop' && micMode.state === 'rec' && now > micMode.end + micLatency() + 0.2) finishLoop();
+  micChunks.push({t0, data: new Float32Array(d)});
+  if (micMode.type === 'slot' && micClock - micMode.t > 3) finishSlot();
+  else if (micMode.type === 'loop' && micMode.state === 'rec' && micClock > micMode.end + micLatency() + 0.1) finishLoop();
 }
 function micLatency(){ return (ctx.outputLatency || ctx.baseLatency || 0.02) + 0.03; }
 function grab(from, to){
@@ -474,13 +480,16 @@ async function toggleSlotRec(i){
   if (micMode && micMode.type === 'slot' && micMode.i === i){ finishSlot(); return; }
   if (micMode) return;
   try { await getMic(); } catch (e) { micError(e); return; }
-  micChunks = []; micMode = {type:'slot', i, t: ctx.currentTime};
+  micChunks = []; micMode = {type:'slot', i, t: micClock !== null ? micClock : ctx.currentTime};
   renderPads(); renderStatus();
 }
 function finishSlot(){
   const m = micMode; if (!m) return; micMode = null;
-  const raw = grab(m.t, ctx.currentTime); micChunks = [];
+  const n = micChunks.length;
+  const raw = grab(m.t - 0.15, micClock !== null ? micClock : ctx.currentTime); micChunks = [];
   let peak = 0; const d = raw.getChannelData(0); for (let k = 0; k < d.length; k++) peak = Math.max(peak, Math.abs(d[k]));
+  lastDiag = `Letzte Aufnahme: ${raw.duration.toFixed(1)} s · ${n} Blöcke · lauteste Stelle ${Math.round(peak * 100)} %`;
+  document.getElementById('diagLine').textContent = lastDiag;
   if (peak < 0.01){ toast('🤔 Ich habe nichts gehört – noch mal lauter!'); renderPads(); renderStatus(); return; }
   const name = tracks[m.i].name + '-Ton';
   customs[m.i] = {buf: trimBuffer(raw), name}; SOUNDS['u'+m.i].l = name;
@@ -506,6 +515,7 @@ async function toggleLoopRec(i){
 function finishLoop(){
   const m = micMode; micMode = null;
   const lat = micLatency();
+  m.n = micChunks.filter(c => c.t0 + c.data.length / ctx.sampleRate > m.start + lat && c.t0 < m.end + lat).length;
   const buf = grab(m.start + lat, m.end + lat); micChunks = [];
   const d = buf.getChannelData(0), sr = ctx.sampleRate, fade = Math.floor(sr * 0.006);
   let peak = 0; for (let k = 0; k < d.length; k++) peak = Math.max(peak, Math.abs(d[k]));
@@ -513,11 +523,14 @@ function finishLoop(){
   for (let k = 0; k < d.length; k++){
     let f = g; if (k < fade) f *= k / fade; if (k > d.length - fade) f *= (d.length - k) / fade; d[k] *= f;
   }
+  lastDiag = `Letzte Aufnahme: ${buf.duration.toFixed(1)} s · ${m.n || 0} Blöcke · lauteste Stelle ${Math.round(peak * 100)} %`;
+  document.getElementById('diagLine').textContent = lastDiag;
+  if (peak < 0.01){ toast('🤔 Da war nichts drauf – erst singen, wenn der Kasten ROT ist!'); renderTracks(); renderStatus(); return; }
   const t = tracks[m.track];
   history.push({type:'replace', track:m.track, prev: snapshot(m.track), audio: t.audio});
   t.audio = buf;
   renderTracks(); renderStatus();
-  toast(peak < 0.01 ? '🤔 Sehr leise – vielleicht noch mal?' : `🎙 ${t.e} ${t.name} singt jetzt mit!`);
+  toast(`🎙 ${t.e} ${t.name} singt jetzt mit!`);
 }
 
 function playSound(id, t, out, v){ const s = SOUNDS[id]; if (s) s.p(t, out, v); }
@@ -657,10 +670,11 @@ function drawMicOverlay(){
   if (micMode.state !== 'rec' || now < micMode.start){
     const left = Math.ceil((micMode.start - now) / beat - 0.001);
     big.textContent = left > 4 ? t.e : String(Math.max(1, left));
-    sub.textContent = left > 4 ? 'Mach dich bereit …' : 'Gleich geht\'s los!';
+    sub.textContent = 'Noch nicht singen – warte auf ROT!';
+    bar.style.width = '0%';
     prog.style.width = '0%'; ov.classList.remove('live');
   } else {
-    big.textContent = '🎤'; sub.textContent = `${t.name}: singen, klatschen, rufen!`;
+    big.textContent = '🔴 JETZT!'; sub.textContent = `${t.e} ${t.name} nimmt auf – singen, klatschen, rufen!`;
     prog.style.width = Math.min(100, (now - micMode.start) / (micMode.end - micMode.start) * 100) + '%';
     ov.classList.add('live');
   }
@@ -677,7 +691,7 @@ function frame(){
     if (performance.now() - lastMicData > 1500){
       micMode = null; micChunks = []; resetMic();
       toast('🎙 Das Mikro hat aufgehört zu hören – tippe noch mal auf 🎙');
-    } else if (micMode.type === 'slot' && ctx.currentTime - micMode.t > 3.4) finishSlot();
+    } else if (micMode.type === 'slot' && ctx.currentTime - micMode.t > 3.6) finishSlot();
     else if (micMode.type === 'loop' && micMode.state === 'rec' && ctx.currentTime > micMode.end + micLatency() + 0.7) finishLoop();
   }
   drawMicOverlay();
