@@ -152,6 +152,20 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
 .instr{display:none;flex-wrap:nowrap;overflow-x:auto;gap:6px;margin-bottom:10px;padding-bottom:2px;scrollbar-width:none}
 .instr::-webkit-scrollbar{display:none}
 .instr .chip{flex:none;white-space:nowrap;font-size:14px;padding:7px 10px}
+.pads.synMode{display:block}
+.synPanel{background:#F6EEE2;border-radius:16px;padding:10px;margin-bottom:10px}
+.synRow{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.synRow .chip{font-size:14px;padding:7px 10px;background:#fff}
+.synRow .chip.sel{background:var(--ink);color:#fff}
+.synRow.presets .chip{background:#F3E8FF;color:#5B2A99}
+.synRow .wave b{font-size:18px}
+.synSl{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:800;margin:4px 0}
+.synSl span{width:86px;flex:none}
+.synSl em{font-style:normal;width:20px;text-align:center}
+.synSl input{flex:1;accent-color:#B05CFF}
+.synKeys{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.synKey .e{font-size:22px !important;font-weight:800}
+.synKey{aspect-ratio:auto;height:64px}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%) translateY(80px);background:var(--ink);color:#fff;padding:10px 16px;border-radius:14px;font-weight:700;transition:transform .25s;z-index:5;max-width:90vw;text-align:center}
 .toast.show{transform:translateX(-50%) translateY(0)}
 @media (max-width:420px){
@@ -234,7 +248,7 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
     <button class="tool" id="undoBtn">↩️ Rückgängig</button>
     <button class="tool" id="clearAllBtn">🧹 Alles löschen</button>
   </div>
-  <div class="ver">Loopi · Version 14<br><span id="diagLine"></span></div>
+  <div class="ver">Loopi · Version 15<br><span id="diagLine"></span></div>
 </div>
 <div class="micOverlay" id="micOverlay"><div class="big"></div><div class="sub"></div><div class="lvl"><i></i></div><div class="prog"><i></i></div><div class="hint">Grüner Balken = das Mikro hört dich · 🎧 Kopfhörer = sauberste Aufnahme</div></div>
 <div class="toast" id="toast"></div>
@@ -1133,7 +1147,7 @@ function initEditor(){
 }
 
 // Pads
-const TABS = [{id:'drums', l:'🥁 Trommeln'}, {id:'notes', l:'🎵 Töne'}, {id:'bass', l:'🎸 Bass'}, {id:'fun', l:'🤪 Quatsch'}, {id:'home', l:'🏠 Alltag'}, {id:'animals', l:'🐾 Tiere'}, {id:'mine', l:'🎤 Eigene'}];
+const TABS = [{id:'drums', l:'🥁 Trommeln'}, {id:'notes', l:'🎵 Töne'}, {id:'bass', l:'🎸 Bass'}, {id:'synth', l:'🎛️ Synthesizer'}, {id:'fun', l:'🤪 Quatsch'}, {id:'home', l:'🏠 Alltag'}, {id:'animals', l:'🐾 Tiere'}, {id:'mine', l:'🎤 Eigene'}];
 function renderTabs(){
   $('tabs').innerHTML = '';
   TABS.forEach(t => {
@@ -1168,8 +1182,88 @@ function renderInstr(){
     box.appendChild(b);
   });
 }
+
+/* ================= Synthesizer ================= */
+const SYN_NOTES = [261.63,293.66,329.63,349.23,392.0,440.0,493.88,523.25,587.33,659.25,698.46,783.99,880.0,987.77,1046.5,1174.66];
+const SYN_NAMES = ['C','D','E','F','G','A','H','C²','D²','E²','F²','G²','A²','H²','C³','D³'];
+const SYN_WAVES = [{id:'sine',l:'Weich',e:'∿'},{id:'triangle',l:'Sanft',e:'△'},{id:'sawtooth',l:'Scharf',e:'⩘'},{id:'square',l:'Retro',e:'⊓'}];
+const SYN_PRESETS = [
+  {l:'🚀 Laser', v:{wave:'sawtooth',bright:.85,reso:.6,len:.25,wob:0,echo:.4,fat:true,oct:1,soft:false}},
+  {l:'☁️ Wolke', v:{wave:'triangle',bright:.45,reso:.1,len:.9,wob:.3,echo:.5,fat:true,oct:1,soft:true}},
+  {l:'🫧 Blubber', v:{wave:'square',bright:.25,reso:.85,len:.3,wob:0,echo:0,fat:false,oct:.5,soft:false}},
+  {l:'🧸 Spielzeug', v:{wave:'square',bright:.7,reso:.2,len:.15,wob:0,echo:.2,fat:false,oct:2,soft:false}},
+  {l:'👻 Gespenst', v:{wave:'sine',bright:.5,reso:0,len:1,wob:.9,echo:.6,fat:false,oct:1,soft:true}},
+];
+const syn = {...SYN_PRESETS[0].v};
+function synVoice(f, set){
+  return (t, o) => {
+    const freq = f * set.oct, dur = .12 + set.len * 1.1, a = set.soft ? .09 : .005;
+    let out = o;
+    if (set.echo > .02){
+      const dl = ctx.createDelay(1), fb = ctx.createGain(), wet = ctx.createGain();
+      dl.delayTime.value = Math.min(.9, stepDur() * (set.echo > .5 ? 2 : 1)); fb.gain.value = .25 + set.echo * .35; wet.gain.value = .55;
+      const mix = ctx.createGain(); mix.connect(o); mix.connect(dl); dl.connect(fb); fb.connect(dl); dl.connect(wet); wet.connect(o);
+      setTimeout(() => { try { fb.gain.setTargetAtTime(0, ctx.currentTime, .05); } catch (e) {} }, (t - ctx.currentTime + dur + 3) * 1000);
+      out = mix;
+    }
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass';
+    const cut = 180 + Math.pow(set.bright, 2) * 7000;
+    lp.Q.value = .7 + set.reso * 16;
+    lp.frequency.setValueAtTime(cut * (set.soft ? .6 : 2.2), t);
+    lp.frequency.exponentialRampToValueAtTime(Math.max(120, cut), t + Math.min(.25, dur * .5));
+    lp.connect(out);
+    const peak = set.wave === 'sine' || set.wave === 'triangle' ? .38 : .2;
+    const voices = set.fat ? [1, 1.008, .992] : [1];
+    voices.forEach(dt => {
+      const x = vox(set.wave, t, dur, lp, peak / Math.sqrt(voices.length), a, [[0, freq * dt]]);
+      if (set.wob > .02) wobble(x, t, dur, 5.5, freq * .03 * set.wob);
+    });
+  };
+}
+function synKey(i){
+  const set = {...syn};
+  const id = 'sy_' + [set.wave, set.bright, set.reso, set.len, set.wob, set.echo, set.fat ? 1 : 0, set.oct, set.soft ? 1 : 0].map(v => typeof v === 'number' ? v.toFixed(2) : v).join('_') + '_' + i;
+  if (!SOUNDS[id]) SOUNDS[id] = {l:SYN_NAMES[i], e:'🎛️', g:'synthkey', c:RAINBOW[i % 7], p:synVoice(SYN_NOTES[i], set)};
+  return id;
+}
+function renderSynth(){
+  const box = $('pads');
+  const panel = document.createElement('div'); panel.className = 'synPanel';
+  const sl = (key, l1, l2, label) => `<label class="synSl"><span>${label}</span><em>${l1}</em><input type="range" min="0" max="100" value="${Math.round(syn[key]*100)}" data-k="${key}"><em>${l2}</em></label>`;
+  panel.innerHTML = `
+    <div class="synRow presets">${SYN_PRESETS.map((p, k) => `<button class="chip" data-p="${k}">${p.l}</button>`).join('')}</div>
+    <div class="synRow">${SYN_WAVES.map(w => `<button class="chip wave ${syn.wave === w.id ? 'sel' : ''}" data-w="${w.id}"><b>${w.e}</b> ${w.l}</button>`).join('')}</div>
+    ${sl('bright','🌑','☀️','Hell')}${sl('reso','🙂','🦆','Quietschen')}${sl('len','·','━','Länge')}${sl('wob','➖','🌊','Wackeln')}${sl('echo','·','🔁','Echo')}
+    <div class="synRow">
+      ${[[.5,'⬇️ Tief'],[1,'Mitte'],[2,'⬆️ Hoch']].map(([v,l]) => `<button class="chip ${syn.oct === v ? 'sel' : ''}" data-o="${v}">${l}</button>`).join('')}
+      <button class="chip ${syn.fat ? 'sel' : ''}" data-fat="1">👯 Dick</button>
+      <button class="chip ${syn.soft ? 'sel' : ''}" data-soft="1">🪶 Weich rein</button>
+    </div>`;
+  box.appendChild(panel);
+  const keys = document.createElement('div'); keys.className = 'synKeys';
+  SYN_NOTES.forEach((f, i) => {
+    const el = document.createElement('button'); el.className = 'pad synKey'; el.style.setProperty('--pc', RAINBOW[i % 7]);
+    el.innerHTML = `<span class="e">${SYN_NAMES[i]}</span>`;
+    onTap(el, () => hitPad(synKey(i), el));
+    keys.appendChild(el);
+  });
+  box.appendChild(keys);
+  const probe = () => { initAudio(); ctx.resume(); playSound(synKey(4), ctx.currentTime + .01, liveGain); };
+  panel.querySelectorAll('input[type=range]').forEach(r => {
+    r.addEventListener('input', () => { syn[r.dataset.k] = r.value / 100; });
+    r.addEventListener('change', probe);
+  });
+  panel.querySelectorAll('[data-p]').forEach(b => onTap(b, () => { Object.assign(syn, SYN_PRESETS[b.dataset.p].v); renderPads(); probe(); }));
+  panel.querySelectorAll('[data-w]').forEach(b => onTap(b, () => { syn.wave = b.dataset.w; renderPads(); probe(); }));
+  panel.querySelectorAll('[data-o]').forEach(b => onTap(b, () => { syn.oct = +b.dataset.o; renderPads(); probe(); }));
+  panel.querySelectorAll('[data-fat]').forEach(b => onTap(b, () => { syn.fat = !syn.fat; renderPads(); probe(); }));
+  panel.querySelectorAll('[data-soft]').forEach(b => onTap(b, () => { syn.soft = !syn.soft; renderPads(); probe(); }));
+}
+
 function renderPads(){
   if (tab === 'mine') $('instr').style.display = 'none';
+  if (tab === 'synth'){ $('pads').innerHTML = ''; $('mineHelp').style.display = 'none'; $('instr').style.display = 'none'; $('pads').classList.add('synMode'); renderSynth(); return; }
+  $('pads').classList.remove('synMode');
   $('pads').innerHTML = '';
   $('mineHelp').style.display = tab === 'mine' ? 'block' : 'none';
   if (tab === 'mine'){
