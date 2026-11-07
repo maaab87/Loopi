@@ -61,6 +61,9 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
 .cell.full{background:var(--c)}
 .cell.now{outline:2px solid var(--ink);outline-offset:-1px}
 .track.muted .cell.full{opacity:.3}
+.cell.vc{background:linear-gradient(to top, var(--c) calc(var(--a) * 100%), #ECE2D3 0) !important}
+.cell.vc.full{box-shadow:inset 0 0 0 2px var(--c)}
+.track.muted .cell.vc{opacity:.35}
 .tbtn{width:44px;height:44px;border-radius:14px;background:#fff;font-size:20px;flex:none;display:grid;place-items:center;box-shadow:0 2px 0 var(--line)}
 .rec{background:#fff}
 .rec .dot{width:20px;height:20px;border-radius:50%;background:var(--red)}
@@ -191,7 +194,7 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
     <button class="tool" id="undoBtn">↩️ Rückgängig</button>
     <button class="tool" id="clearAllBtn">🧹 Alles löschen</button>
   </div>
-  <div class="ver">Loopi · Version 9<br><span id="diagLine"></span></div>
+  <div class="ver">Loopi · Version 10<br><span id="diagLine"></span></div>
 </div>
 <div class="micOverlay" id="micOverlay"><div class="big"></div><div class="sub"></div><div class="lvl"><i></i></div><div class="prog"><i></i></div><div class="hint">Grüner Balken = das Mikro hört dich</div></div>
 <div class="toast" id="toast"></div>
@@ -386,6 +389,12 @@ function resetMic(){
   try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
   micStream = null; micSrc = null; micProc = null;
 }
+function releaseMic(){
+  resetMic(); micWanted = false; micClock = null;
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+  if (silentEl && silentEl.paused) silentEl.play().catch(() => {});
+  if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+}
 async function getMic(){
   if (micAlive()) return;
   resetMic(); // tote/stumme Mikro-Verbindung (z. B. nach Hintergrund, Anruf) verwerfen und neu holen
@@ -490,6 +499,7 @@ function finishSlot(){
   let peak = 0; const d = raw.getChannelData(0); for (let k = 0; k < d.length; k++) peak = Math.max(peak, Math.abs(d[k]));
   lastDiag = `Letzte Aufnahme: ${raw.duration.toFixed(1)} s · ${n} Blöcke · lauteste Stelle ${Math.round(peak * 100)} %`;
   document.getElementById('diagLine').textContent = lastDiag;
+  releaseMic();
   if (peak < 0.01){ toast('🤔 Ich habe nichts gehört – noch mal lauter!'); renderPads(); renderStatus(); return; }
   const name = tracks[m.i].name + '-Ton';
   customs[m.i] = {buf: trimBuffer(raw), name}; SOUNDS['u'+m.i].l = name;
@@ -500,7 +510,7 @@ function finishSlot(){
 // Ganzer Loop mit Stimme für eine Spur
 async function toggleLoopRec(i){
   unlockAudio();
-  if (micMode && micMode.type === 'loop' && micMode.track === i){ micMode = null; micChunks = []; renderTracks(); renderStatus(); return; }
+  if (micMode && micMode.type === 'loop' && micMode.track === i){ micMode = null; micChunks = []; releaseMic(); renderTracks(); renderStatus(); return; }
   if (micMode) return;
   try { await getMic(); } catch (e) { micError(e); return; }
   recTrack = null; selected = i;
@@ -525,10 +535,21 @@ function finishLoop(){
   }
   lastDiag = `Letzte Aufnahme: ${buf.duration.toFixed(1)} s · ${m.n || 0} Blöcke · lauteste Stelle ${Math.round(peak * 100)} %`;
   document.getElementById('diagLine').textContent = lastDiag;
-  if (peak < 0.01){ toast('🤔 Da war nichts drauf – erst singen, wenn der Kasten ROT ist!'); renderTracks(); renderStatus(); return; }
+  if (peak < 0.01){ releaseMic(); toast('🤔 Da war nichts drauf – erst singen, wenn der Kasten ROT ist!'); renderTracks(); renderStatus(); return; }
   const t = tracks[m.track];
   history.push({type:'replace', track:m.track, prev: snapshot(m.track), audio: t.audio});
   t.audio = buf;
+  releaseMic();
+  // sofort mitten im laufenden Durchgang einsteigen, nicht erst eine Runde später
+  if (playing && !t.muted){
+    const now = ctx.currentTime + 0.03, loop = STEPS * stepDur();
+    let off = (now - loopStartTime) % loop; if (off < 0) off += loop;
+    if (off < loop - 0.1){
+      const src = ctx.createBufferSource(); src.buffer = buf; src.connect(t.gain);
+      src.start(now, off); src.stop(now + (loop - off));
+      t.srcs = (t.srcs || []); t.srcs.push({s: src, t: now});
+    }
+  }
   renderTracks(); renderStatus();
   toast(`🎙 ${t.e} ${t.name} singt jetzt mit!`);
 }
@@ -558,6 +579,7 @@ const tracks = [
 ].map(t => ({...t, events: Array.from({length:STEPS}, () => []), muted:false}));
 
 let beatId = 'rock', bpm = 100, selected = 0, recTrack = null, tab = 'drums';
+let loopStartTime = 0;
 let playing = false, timer = null, nextTime = 0, nextAbs = 0, curStep = -1;
 const visQueue = [], history = [];
 const stepDur = () => 60 / bpm / 2;
@@ -572,6 +594,7 @@ function scheduleStep(step, t){
     playSound(inst, t, beatGain, inst === 'hat' ? .8 : 1);
   }
   if (step === 0){
+    loopStartTime = t;
     if (micMode && micMode.type === 'loop' && micMode.state === 'wait' && t > micMode.start - stepDur() / 2){
       micMode.state = 'armed'; micMode.start = t; micMode.end = t + STEPS * stepDur();
     }
@@ -599,13 +622,13 @@ function scheduler(){
 }
 function start(){
   initAudio(); ctx.resume();
-  nextTime = ctx.currentTime + .06; nextAbs = 0; visQueue.length = 0;
+  nextTime = ctx.currentTime + .06; nextAbs = 0; visQueue.length = 0; loopStartTime = nextTime;
   timer = setInterval(scheduler, 25); scheduler();
   playing = true; updatePlay();
 }
 function stop(){
   clearInterval(timer); playing = false; recTrack = null; curStep = -1;
-  if (micMode && micMode.type === 'loop'){ micMode = null; micChunks = []; }
+  if (micMode){ micMode = null; micChunks = []; releaseMic(); }
   tracks.forEach(t => { (t.srcs || []).forEach(x => { try { x.s.stop(); } catch (e) {} }); t.srcs = []; });
   tracks.forEach(t => t.events.forEach(a => a.forEach(ev => ev.skip = false)));
   updatePlay(); renderTracks(); renderStatus(); drawStep();
@@ -689,7 +712,7 @@ function frame(){
   if (micMode && ctx){
     // Wächter: liefert das Mikro keine Daten mehr, sauber abbrechen statt hängen
     if (performance.now() - lastMicData > 1500){
-      micMode = null; micChunks = []; resetMic();
+      micMode = null; micChunks = []; releaseMic();
       toast('🎙 Das Mikro hat aufgehört zu hören – tippe noch mal auf 🎙');
     } else if (micMode.type === 'slot' && ctx.currentTime - micMode.t > 3.6) finishSlot();
     else if (micMode.type === 'loop' && micMode.state === 'rec' && ctx.currentTime > micMode.end + micLatency() + 0.7) finishLoop();
@@ -758,9 +781,24 @@ function renderTracks(){
   });
   drawStep();
 }
+function voiceEnvelope(buf){
+  if (!buf) return null;
+  if (buf._env) return buf._env;
+  const d = buf.getChannelData(0), n = Math.floor(d.length / STEPS), env = [];
+  for (let k = 0; k < STEPS; k++){
+    let p = 0; for (let j = k * n; j < (k + 1) * n; j += 8) p = Math.max(p, Math.abs(d[j]));
+    env.push(Math.min(1, p < 0.02 ? 0 : 0.15 + p));
+  }
+  buf._env = env; return env;
+}
 function renderCells(i){
   const cells = tracks[i].row.querySelectorAll('.cell');
-  tracks[i].events.forEach((evs, s) => cells[s].classList.toggle('full', evs.length > 0));
+  const env = voiceEnvelope(tracks[i].audio);
+  tracks[i].events.forEach((evs, s) => {
+    cells[s].classList.toggle('full', evs.length > 0);
+    cells[s].classList.toggle('vc', !!env);
+    cells[s].style.setProperty('--a', env ? env[s] : 0);
+  });
   tracks[i].row.classList.toggle('hasVoice', !!tracks[i].audio);
 }
 function selectTrack(i){
