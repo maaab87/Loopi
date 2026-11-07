@@ -95,6 +95,7 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
 .tool.warn{background:#FFE3E6;color:#C21F33}
 .micHelp{display:none;background:#FFE3E6;color:#7A1424;font-size:15px;line-height:1.4}
 .micHelp ul{margin:6px 0 10px;padding-left:20px}
+.micHelp .diag{font-size:12px;opacity:.7;margin:4px 0 10px}
 .micHelp .tool{background:#fff;color:#7A1424;width:auto;padding:8px 18px}
 .tbtn.mic{font-size:20px}
 .tbtn.mic.wait{background:#FFB020;animation:pulse .5s infinite}
@@ -127,13 +128,7 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
 <body>
 <div class="wrap">
   <div class="card micHelp" id="micHelp">
-    <b>🎙 Das Mikrofon ist hier gesperrt.</b><br>
-    Diese Ansicht erlaubt keinen Mikrofon-Zugriff. So geht's trotzdem:
-    <ul>
-      <li>Loopi als <b>Datei</b> im normalen Browser öffnen (Chrome, Edge oder Firefox) und das Mikrofon erlauben.</li>
-      <li>Falls der Browser gefragt hat: Mikrofon-Zugriff in den Einstellungen für diese Seite erlauben.</li>
-      <li>Oder bei <b>🎤 Eigene</b> mit 📁 eine Aufnahme vom Handy laden.</li>
-    </ul>
+    <div id="micHelpText"></div>
     <button class="tool" id="micHelpClose">Okay</button>
   </div>
   <button id="soundBanner"class="soundBanner">🔊 <span><b>Hier tippen, um den Ton einzuschalten</b><br><small>iPhone: Stumm-Schalter an der Seite prüfen &amp; Lautstärke hoch</small></span></button>
@@ -373,8 +368,32 @@ async function getMic(){
   src.connect(micProc); micProc.connect(silent); silent.connect(ctx.destination);
   micProc.onaudioprocess = onMic;
 }
-function micError(){
+function micError(err){
   micMode = null; renderTracks(); renderPads(); renderStatus();
+  const name = (err && (err.name || err.message)) || 'unbekannt';
+  const ua = navigator.userAgent;
+  const inApp = /(FBAN|FBAV|Instagram|Line\/|GSA\/|Claude|WhatsApp|wv\))/i.test(ua) || (/iPhone|iPad/.test(ua) && !/Safari\//.test(ua));
+  let html;
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || inApp){
+    html = `<b>🎙 Dieser Browser lässt kein Mikrofon zu.</b><br>
+      Du bist vermutlich in einer App-Vorschau (z. B. in der Claude-App oder WhatsApp) statt in Safari.
+      <ul><li>Unten oder oben auf <b>Teilen</b> bzw. das <b>Safari-/Kompass-Symbol</b> tippen → <b>„In Safari öffnen“</b>.</li>
+      <li>Oder Safari selbst öffnen und <b>maaab87.github.io/Loopi</b> eintippen.</li></ul>`;
+  } else if (name === 'NotAllowedError' || name === 'SecurityError'){
+    html = `<b>🎙 Das Mikrofon wurde abgelehnt.</b><br>
+      Wenn einmal „Nicht erlauben“ gewählt wurde, fragt das iPhone nicht mehr nach. So schaltest du es frei:
+      <ul><li>In Safari links in der Adressleiste auf <b>„aA“</b> (bzw. das Seiten-Symbol) tippen → <b>Website-Einstellungen</b> → <b>Mikrofon: Erlauben</b>.</li>
+      <li>Falls das nicht hilft: <b>Einstellungen → Apps → Safari → Mikrofon</b> auf <b>„Fragen“</b> oder „Erlauben“ stellen.</li>
+      <li>Danach die Seite neu laden und noch mal 🎙 tippen.</li></ul>`;
+  } else if (name === 'NotFoundError' || name === 'OverconstrainedError'){
+    html = `<b>🎙 Kein Mikrofon gefunden.</b><br>Ist ein Bluetooth-Kopfhörer verbunden? Einmal trennen und neu laden.`;
+  } else if (name === 'NotReadableError' || name === 'AbortError'){
+    html = `<b>🎙 Das Mikrofon ist gerade besetzt.</b><br>Läuft ein Anruf, FaceTime oder eine Sprachaufnahme? Beenden und noch mal 🎙 tippen.`;
+  } else {
+    html = `<b>🎙 Das Mikrofon startet nicht.</b><br>Seite neu laden und noch mal 🎙 tippen. Mit 📁 bei „🎤 Eigene“ kannst du alternativ eine Aufnahme laden.`;
+  }
+  html += `<div class="diag">Technischer Hinweis: ${name} · ${window.isSecureContext ? 'https ok' : 'nicht sicher'} · ${navigator.mediaDevices && navigator.mediaDevices.getUserMedia ? 'API da' : 'API fehlt'}</div>`;
+  document.getElementById('micHelpText').innerHTML = html;
   document.getElementById('micHelp').style.display = 'block';
   document.getElementById('micHelp').scrollIntoView({behavior:'smooth', block:'center'});
 }
@@ -400,7 +419,7 @@ async function toggleSlotRec(i){
   unlockAudio();
   if (micMode && micMode.type === 'slot' && micMode.i === i){ finishSlot(); return; }
   if (micMode) return;
-  try { await getMic(); } catch (e) { micError(); return; }
+  try { await getMic(); } catch (e) { micError(e); return; }
   micChunks = []; micMode = {type:'slot', i, t: ctx.currentTime};
   renderPads(); renderStatus();
 }
@@ -420,7 +439,7 @@ async function toggleLoopRec(i){
   unlockAudio();
   if (micMode && micMode.type === 'loop' && micMode.track === i){ micMode = null; micChunks = []; renderTracks(); renderStatus(); return; }
   if (micMode) return;
-  try { await getMic(); } catch (e) { micError(); return; }
+  try { await getMic(); } catch (e) { micError(e); return; }
   recTrack = null; selected = i;
   micChunks = []; micMode = {type:'loop', track:i, state:'wait'};
   if (!playing) start();
