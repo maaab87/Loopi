@@ -149,6 +149,9 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
 .addTrack{width:100%;margin-top:4px;padding:12px;border-radius:16px;border:3px dashed #D9CBB5;background:transparent;font-weight:800;font-size:16px;color:var(--soft)}
 .addTrack small{font-weight:500}
 .chip.warn{background:#FFE3E6;color:#C21F33}
+.instr{display:none;flex-wrap:nowrap;overflow-x:auto;gap:6px;margin-bottom:10px;padding-bottom:2px;scrollbar-width:none}
+.instr::-webkit-scrollbar{display:none}
+.instr .chip{flex:none;white-space:nowrap;font-size:14px;padding:7px 10px}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%) translateY(80px);background:var(--ink);color:#fff;padding:10px 16px;border-radius:14px;font-weight:700;transition:transform .25s;z-index:5;max-width:90vw;text-align:center}
 .toast.show{transform:translateX(-50%) translateY(0)}
 @media (max-width:420px){
@@ -214,6 +217,7 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
       <b>Eigene Geräusche:</b> Tippe auf <b>🎙 Aufnehmen</b> und ruf etwas ins Mikro – „Hallo!“, Lachen, Bellen … Danach ist es ein Pad wie alle anderen.<br>
       <small>Klappt das Mikro nicht? Mit 📁 kannst du eine Aufnahme oder ein kurzes Video vom Handy laden. Die Geräusche bleiben, bis die Seite neu geladen wird.</small>
     </div>
+    <div class="instr row" id="instr"></div>
     <div class="pads" id="pads"></div>
   </div>
 
@@ -230,7 +234,7 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
     <button class="tool" id="undoBtn">↩️ Rückgängig</button>
     <button class="tool" id="clearAllBtn">🧹 Alles löschen</button>
   </div>
-  <div class="ver">Loopi · Version 13<br><span id="diagLine"></span></div>
+  <div class="ver">Loopi · Version 14<br><span id="diagLine"></span></div>
 </div>
 <div class="micOverlay" id="micOverlay"><div class="big"></div><div class="sub"></div><div class="lvl"><i></i></div><div class="prog"><i></i></div><div class="hint">Grüner Balken = das Mikro hört dich · 🎧 Kopfhörer = sauberste Aufnahme</div></div>
 <div class="toast" id="toast"></div>
@@ -344,6 +348,15 @@ const SOUNDS = {
   piep:   {l:'Piep',    e:'🐤', g:'fun', c:'#2EC27E', p:(t,o)=>osc('square',1800,t,.08,o,.14)},
   wusch:  {l:'Wusch',   e:'🌪️', g:'fun', c:'#3D8BFF', p:(t,o)=>{const f=noise(t,.4,o,.5,'bandpass',300,2);f.frequency.exponentialRampToValueAtTime(5000,t+.35)}},
   // weitere Trommeln & Quatsch
+  boom:   {l:'Wumms',   e:'💣', g:'drums', c:'#2B2340', p:(t,o)=>osc('sine',95,t,1,o,1,.002,45,.25)},
+  rim:    {l:'Rand',    e:'🪵', g:'drums', c:'#A0785A', p:(t,o)=>{noise(t,.03,o,.6,'bandpass',1900,3);osc('triangle',480,t,.04,o,.35)}},
+  ohat:   {l:'Tsss',    e:'💨', g:'drums', c:'#5BAA3C', p:(t,o)=>noise(t,.4,o,.28,'highpass',6500)},
+  bongoH: {l:'Bongo',   e:'🪘', g:'drums', c:'#E08A00', p:(t,o)=>osc('sine',420,t,.18,o,.7,.002,380,.05)},
+  bongoL: {l:'Bongo tief',e:'🪘',g:'drums', c:'#B05A00', p:(t,o)=>osc('sine',300,t,.25,o,.75,.002,250,.06)},
+  conga:  {l:'Conga',   e:'🥥', g:'drums', c:'#9C6B3D', p:(t,o)=>{osc('sine',220,t,.35,o,.75,.002,190,.08);noise(t,.03,o,.25,'bandpass',1200,2)}},
+  tamb:   {l:'Tamburin',e:'🎊', g:'drums', c:'#FF7AA8', p:(t,o)=>{for(let k=0;k<4;k++)noise(t+k*.018,.08,o,.25,'bandpass',7000+k*400,4);}},
+  tri:    {l:'Triangel',e:'🔺', g:'drums', c:'#1FB5C9', p:(t,o)=>{osc('sine',3150,t,1.3,o,.12,.002);osc('sine',4400,t,.9,o,.07,.002);osc('sine',6100,t,.5,o,.04,.002)}},
+  wood:   {l:'Holzblock',e:'🧱', g:'drums', c:'#C47A3A', p:(t,o)=>{osc('sine',880,t,.07,o,.6,.001);noise(t,.02,o,.3,'bandpass',2000,4)}},
   crash:  {l:'Becken',  e:'🥏', g:'drums', c:'#E6B800', p:(t,o)=>{noise(t,1.2,o,.35,'highpass',5000);noise(t,.3,o,.2,'bandpass',3000,.8)}},
   snap:   {l:'Schnipp', e:'🫰', g:'drums', c:'#FF7AA8', p:(t,o)=>{noise(t,.03,o,.7,'bandpass',2600,2);osc('sine',1800,t,.02,o,.2)}},
   ufo:    {l:'Ufo',     e:'🛸', g:'fun', c:'#8CCB2E', p:(t,o)=>{const x=osc('sine',650,t,.8,o,.25,.05);wobble(x,t,.8,6,220)}},
@@ -399,7 +412,31 @@ NOTE.forEach((f,i)=>{
   SOUNDS['b'+i] = {l:NOTE_NAME[i], e:'🎸', g:'bass', c:RAINBOW[i], p:(t,o)=>{
     const bf=f/4; osc('sawtooth',bf,t,.35,filt('lowpass',650,o),.35,.005); osc('sine',bf,t,.42,o,.45,.005);
   }};
+  SOUNDS['n'+i].inst = 'marimba'; SOUNDS['b'+i].inst = 'synth';
 });
+/* Instrumente für Töne und Bass */
+const NOTE_INSTR = [
+  {id:'marimba', l:'Marimba',  e:'🎵'},
+  {id:'klavier', l:'Klavier',  e:'🎹', p:(f,t,o)=>{osc('triangle',f,t,1.1,o,.32,.003);osc('sawtooth',f,t,.5,filt('lowpass',f*3,o),.12,.003);osc('sine',f*2,t,.45,o,.07,.003)}},
+  {id:'floete',  l:'Flöte',    e:'🌬️', p:(f,t,o)=>{const x=vox('sine',t,.55,o,.34,.06,[[0,f*2]]);wobble(x,t,.55,5,f*.02);noise(t,.18,o,.035,'bandpass',f*4,2)}},
+  {id:'gitarre', l:'Gitarre',  e:'🎸', p:(f,t,o)=>{osc('sawtooth',f,t,.9,sweepFilt('lowpass',1,o,t,[[0,f*7],[.25,f*1.6]]),.3,.002);osc('triangle',f*2,t,.35,o,.07,.002)}},
+  {id:'glocke',  l:'Glöckchen',e:'🔔', p:(f,t,o)=>bell(t,f*2,1.4,o,.28)},
+  {id:'orgel',   l:'Orgel',    e:'⛪', p:(f,t,o)=>{vox('sine',t,.55,o,.22,.02,[[0,f]]);vox('sine',t,.55,o,.12,.02,[[0,f*2]]);vox('sine',t,.55,o,.07,.02,[[0,f*3]]);vox('sine',t,.55,o,.04,.02,[[0,f*4]])}},
+  {id:'synth',   l:'Synth',    e:'🎛️', p:(f,t,o)=>{const lp=filt('lowpass',2400,o);vox('sawtooth',t,.45,lp,.15,.01,[[0,f]]);vox('sawtooth',t,.45,lp,.15,.01,[[0,f*1.007]])}},
+  {id:'spieluhr',l:'Spieluhr', e:'🧸', p:(f,t,o)=>{osc('sine',f*2,t,.9,o,.3,.002);osc('sine',f*4,t,.25,o,.08,.002);osc('sine',f*6.1,t,.1,o,.04,.002)}},
+];
+const BASS_INSTR = [
+  {id:'synth',  l:'Synth-Bass', e:'🎸'},
+  {id:'tief',   l:'Wummer',     e:'🔊', p:(f,t,o)=>{osc('sine',f*1.5,t,.7,o,.75,.004,f,.08);osc('triangle',f*2,t,.15,o,.12,.003)}},
+  {id:'zupf',   l:'Zupfbass',   e:'🎻', p:(f,t,o)=>{osc('triangle',f,t,.5,filt('lowpass',900,o),.6,.003);osc('sawtooth',f,t,.12,filt('lowpass',1500,o),.12,.002)}},
+  {id:'tuba',   l:'Tuba',       e:'🎺', p:(f,t,o)=>{const x=vox('sawtooth',t,.5,filt('lowpass',480,o),.45,.04,[[0,f]]);wobble(x,t,.5,5,f*.012)}},
+  {id:'wobble', l:'Wobbel',     e:'〰️', p:(f,t,o)=>{const lp=ctx.createBiquadFilter();lp.type='lowpass';lp.Q.value=8;lp.frequency.value=500;lp.connect(o);const l=ctx.createOscillator(),lg=ctx.createGain();l.frequency.value=6;lg.gain.value=420;l.connect(lg);lg.connect(lp.frequency);l.start(t);l.stop(t+.6);vox('sawtooth',t,.5,lp,.4,.01,[[0,f]])}},
+];
+NOTE.forEach((f,i)=>{
+  NOTE_INSTR.forEach(ins => { if (ins.p) SOUNDS[`n${i}_${ins.id}`] = {l:NOTE_NAME[i], e:ins.e, g:'notes', inst:ins.id, c:RAINBOW[i], p:(t,o)=>ins.p(f,t,o)}; });
+  BASS_INSTR.forEach(ins => { if (ins.p) SOUNDS[`b${i}_${ins.id}`] = {l:NOTE_NAME[i], e:ins.e, g:'bass', inst:ins.id, c:RAINBOW[i], p:(t,o)=>ins.p(f/4,t,o)}; });
+});
+const curInst = {notes:'marimba', bass:'synth'};
 /* Eigene Geräusche */
 const MINE_COLORS = ['#2EC27E','#FF8A3D','#3D8BFF','#B05CFF','#FF4D5E','#1FB5C9','#E6B800','#FF7AA8'];
 const customs = MINE_COLORS.map(() => null); // {buf, name}
@@ -1113,7 +1150,26 @@ function fileInput(i){
   inp.addEventListener('change', () => { loadCustom(i, inp.files[0]); inp.value = ''; });
   return inp;
 }
+function renderInstr(){
+  const box = $('instr'); box.innerHTML = '';
+  const list = tab === 'notes' ? NOTE_INSTR : tab === 'bass' ? BASS_INSTR : null;
+  box.style.display = list ? 'flex' : 'none';
+  if (!list) return;
+  list.forEach(ins => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (curInst[tab] === ins.id ? ' sel' : '');
+    b.innerHTML = `<span class="e">${ins.e}</span>${ins.l}`;
+    onTap(b, () => {
+      curInst[tab] = ins.id; renderPads();
+      initAudio(); ctx.resume();
+      const id = tab === 'notes' ? (ins.p ? `n0_${ins.id}` : 'n0') : (ins.p ? `b0_${ins.id}` : 'b0');
+      playSound(id, ctx.currentTime + .01, liveGain); // Hörprobe
+    });
+    box.appendChild(b);
+  });
+}
 function renderPads(){
+  if (tab === 'mine') $('instr').style.display = 'none';
   $('pads').innerHTML = '';
   $('mineHelp').style.display = tab === 'mine' ? 'block' : 'none';
   if (tab === 'mine'){
@@ -1152,7 +1208,8 @@ function renderPads(){
     });
     return;
   }
-  Object.entries(SOUNDS).filter(([, s]) => s.g === tab).forEach(([id, s]) => {
+  renderInstr();
+  Object.entries(SOUNDS).filter(([, s]) => s.g === tab && (!curInst[tab] || s.inst === curInst[tab])).forEach(([id, s]) => {
     const el = document.createElement('button');
     el.className = 'pad'; el.style.setProperty('--pc', s.c);
     el.innerHTML = `<span class="e">${s.e}</span>${s.l}`;
