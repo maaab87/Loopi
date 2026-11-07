@@ -114,6 +114,15 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
 .soundBanner span{font-size:16px;line-height:1.25}
 .soundBanner small{font-size:13px;font-weight:500}
 .ver{text-align:center;font-size:12px;color:var(--soft)}
+.micOverlay{position:fixed;left:50%;top:14px;transform:translateX(-50%);width:min(320px,90vw);display:none;flex-direction:column;align-items:center;gap:6px;background:rgba(43,35,64,.92);color:#fff;border-radius:22px;padding:14px 16px;z-index:6;pointer-events:none}
+.micOverlay.live{background:rgba(255,77,94,.95)}
+.micOverlay .big{font-size:64px;font-weight:800;line-height:1}
+.micOverlay .sub{font-size:18px;font-weight:800;text-align:center}
+.micOverlay .lvl,.micOverlay .prog{width:100%;height:10px;border-radius:5px;background:rgba(255,255,255,.25);overflow:hidden}
+.micOverlay .lvl i{display:block;height:100%;width:0;background:#7CFF9B;transition:width .05s}
+.micOverlay .prog{height:6px}
+.micOverlay .prog i{display:block;height:100%;width:0;background:#fff}
+.micOverlay .hint{font-size:12px;opacity:.75}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%) translateY(80px);background:var(--ink);color:#fff;padding:10px 16px;border-radius:14px;font-weight:700;transition:transform .25s;z-index:5;max-width:90vw;text-align:center}
 .toast.show{transform:translateX(-50%) translateY(0)}
 @media (max-width:420px){
@@ -182,8 +191,9 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
     <button class="tool" id="undoBtn">↩️ Rückgängig</button>
     <button class="tool" id="clearAllBtn">🧹 Alles löschen</button>
   </div>
-  <div class="ver">Loopi · Version 7</div>
+  <div class="ver">Loopi · Version 8</div>
 </div>
+<div class="micOverlay" id="micOverlay"><div class="big"></div><div class="sub"></div><div class="lvl"><i></i></div><div class="prog"><i></i></div><div class="hint">Pegel zeigt, ob das Mikro dich hört</div></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -204,7 +214,10 @@ function initAudio(){
   beatGain = ctx.createGain(); beatGain.connect(master); setBeatVol();
   liveGain = ctx.createGain(); liveGain.connect(master);
   tracks.forEach(t => { t.gain = ctx.createGain(); t.gain.connect(master); });
-  ctx.onstatechange = updateSoundBanner;
+  ctx.onstatechange = () => {
+    updateSoundBanner();
+    if (ctx.state !== 'running' && ctx.state !== 'closed') ctx.resume().catch(() => {});
+  };
 }
 /* Ton-Freischaltung: Handy-Browser erlauben Audio erst beim Loslassen (touchend/click) */
 let silentEl = null;
@@ -229,7 +242,7 @@ function unlockAudio(){
       silentEl.setAttribute('playsinline', ''); silentEl.loop = true; silentEl.src = silentWavUrl();
     } catch (e) {}
   }
-  if (silentEl && silentEl.paused) silentEl.play().catch(() => {});
+  if (silentEl && silentEl.paused && !micWanted) silentEl.play().catch(() => {});
   if (ctx.state !== 'running'){
     ctx.resume().then(updateSoundBanner).catch(() => {});
     try { const s = ctx.createBufferSource(); s.buffer = ctx.createBuffer(1, 1, 22050); s.connect(ctx.destination); s.start(0); } catch (e) {}
@@ -360,9 +373,22 @@ async function loadCustom(i, file){
 
 /* ================= Mikrofon ================= */
 let micWanted = false;
-let micStream = null, micProc = null, micChunks = [], micMode = null, micShown = '';
+let micStream = null, micSrc = null, micProc = null, micChunks = [], micMode = null, micShown = '';
+let micLevel = 0, lastMicData = 0;
+function micAlive(){
+  if (!micStream || !micProc) return false;
+  const tr = micStream.getAudioTracks()[0];
+  return !!tr && tr.readyState === 'live' && !tr.muted;
+}
+function resetMic(){
+  try { if (micProc) { micProc.onaudioprocess = null; micProc.disconnect(); } } catch (e) {}
+  try { if (micSrc) micSrc.disconnect(); } catch (e) {}
+  try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  micStream = null; micSrc = null; micProc = null;
+}
 async function getMic(){
-  if (micStream) return;
+  if (micAlive()) return;
+  resetMic(); // tote/stumme Mikro-Verbindung (z. B. nach Hintergrund, Anruf) verwerfen und neu holen
   if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('nomic');
   // iPhone: "playback" verhindert Aufnahmen – für das Mikro auf Wiedergabe+Aufnahme umschalten
   micWanted = true;
@@ -372,13 +398,21 @@ async function getMic(){
   st.className = 'status rec'; st.textContent = '🎙 Warte auf die Mikrofon-Freigabe … (bitte „Erlauben“ tippen)';
   const ask = navigator.mediaDevices.getUserMedia({audio:true});
   const timeout = new Promise((_, rej) => setTimeout(() => rej({name:'Timeout'}), 12000));
-  micStream = await Promise.race([ask, timeout]);
-  if (ctx.state !== 'running') { try { await ctx.resume(); } catch (e) {} }
-  const src = ctx.createMediaStreamSource(micStream);
-  micProc = ctx.createScriptProcessor(4096, 1, 1);
-  const silent = ctx.createGain(); silent.gain.value = 0;
-  src.connect(micProc); micProc.connect(silent); silent.connect(ctx.destination);
-  micProc.onaudioprocess = onMic;
+  const stream = await Promise.race([ask, timeout]);
+  try {
+    if (ctx.state !== 'running') { try { await ctx.resume(); } catch (e) {} }
+    micSrc = ctx.createMediaStreamSource(stream);
+    micProc = ctx.createScriptProcessor(2048, 1, 1);
+    const silent = ctx.createGain(); silent.gain.value = 0;
+    micSrc.connect(micProc); micProc.connect(silent); silent.connect(ctx.destination);
+    micProc.onaudioprocess = onMic;
+    micStream = stream;
+    const tr = stream.getAudioTracks()[0];
+    if (tr) tr.addEventListener('ended', resetMic);
+    lastMicData = performance.now();
+  } catch (e) {
+    micStream = stream; resetMic(); throw e;
+  }
 }
 function micError(err){
   micMode = null; renderTracks(); renderPads(); renderStatus();
@@ -415,11 +449,14 @@ function micError(err){
   document.getElementById('micHelp').scrollIntoView({behavior:'smooth', block:'center'});
 }
 function onMic(e){
-  if (!micMode) return;
   const d = e.inputBuffer.getChannelData(0), now = ctx.currentTime;
+  lastMicData = performance.now();
+  let sum = 0; for (let i = 0; i < d.length; i += 4) sum += d[i] * d[i];
+  micLevel = Math.max(Math.sqrt(sum / (d.length / 4)) * 4, micLevel * 0.85);
+  if (!micMode) return;
   micChunks.push({t0: now - d.length / ctx.sampleRate, data: new Float32Array(d)});
   if (micMode.type === 'slot' && now - micMode.t > 3) finishSlot();
-  if (micMode.type === 'loop' && micMode.end && now > micMode.end + micLatency() + 0.2) finishLoop();
+  else if (micMode.type === 'loop' && micMode.state === 'rec' && now > micMode.end + micLatency() + 0.2) finishLoop();
 }
 function micLatency(){ return (ctx.outputLatency || ctx.baseLatency || 0.02) + 0.03; }
 function grab(from, to){
@@ -458,8 +495,12 @@ async function toggleLoopRec(i){
   if (micMode) return;
   try { await getMic(); } catch (e) { micError(e); return; }
   recTrack = null; selected = i;
-  micChunks = []; micMode = {type:'loop', track:i, state:'wait'};
   if (!playing) start();
+  // Start der Aufnahme = nächster Loop-Anfang mit mindestens 4 Schlägen Einzähler
+  const sd = stepDur();
+  let s0 = nextTime + ((STEPS - nextAbs % STEPS) % STEPS) * sd;
+  while (s0 - ctx.currentTime < 8 * sd) s0 += STEPS * sd;
+  micChunks = []; micMode = {type:'loop', track:i, state:'wait', start:s0, end:s0 + STEPS * sd};
   renderTracks(); renderStatus();
 }
 function finishLoop(){
@@ -518,7 +559,7 @@ function scheduleStep(step, t){
     playSound(inst, t, beatGain, inst === 'hat' ? .8 : 1);
   }
   if (step === 0){
-    if (micMode && micMode.type === 'loop' && micMode.state === 'wait'){
+    if (micMode && micMode.type === 'loop' && micMode.state === 'wait' && t > micMode.start - stepDur() / 2){
       micMode.state = 'armed'; micMode.start = t; micMode.end = t + STEPS * stepDur();
     }
     tracks.forEach(tr => {
@@ -599,6 +640,31 @@ function drawStep(){
   document.querySelectorAll('.cell.now').forEach(c => c.classList.remove('now'));
   if (curStep >= 0) document.querySelectorAll('.cells').forEach(cs => cs.children[curStep].classList.add('now'));
 }
+function drawMicOverlay(){
+  const ov = document.getElementById('micOverlay');
+  if (!micMode || !ctx){ ov.style.display = 'none'; micLevel *= 0.9; return; }
+  ov.style.display = 'flex';
+  const big = ov.querySelector('.big'), sub = ov.querySelector('.sub'), bar = ov.querySelector('.lvl i'), prog = ov.querySelector('.prog i');
+  bar.style.width = Math.min(100, micLevel * 100) + '%';
+  const now = ctx.currentTime;
+  if (micMode.type === 'slot'){
+    big.textContent = '🎤'; sub.textContent = 'Jetzt ins Mikro!';
+    prog.style.width = Math.min(100, (now - micMode.t) / 3 * 100) + '%';
+    ov.classList.add('live');
+    return;
+  }
+  const t = tracks[micMode.track], beat = 2 * stepDur();
+  if (micMode.state !== 'rec' || now < micMode.start){
+    const left = Math.ceil((micMode.start - now) / beat - 0.001);
+    big.textContent = left > 4 ? t.e : String(Math.max(1, left));
+    sub.textContent = left > 4 ? 'Mach dich bereit …' : 'Gleich geht\'s los!';
+    prog.style.width = '0%'; ov.classList.remove('live');
+  } else {
+    big.textContent = '🎤'; sub.textContent = `${t.name}: singen, klatschen, rufen!`;
+    prog.style.width = Math.min(100, (now - micMode.start) / (micMode.end - micMode.start) * 100) + '%';
+    ov.classList.add('live');
+  }
+}
 function frame(){
   if (playing && ctx){
     let changed = false;
@@ -606,6 +672,15 @@ function frame(){
     if (changed) drawStep();
     if (micMode && micMode.type === 'loop' && micMode.state === 'armed' && ctx.currentTime >= micMode.start) micMode.state = 'rec';
   }
+  if (micMode && ctx){
+    // Wächter: liefert das Mikro keine Daten mehr, sauber abbrechen statt hängen
+    if (performance.now() - lastMicData > 1500){
+      micMode = null; micChunks = []; resetMic();
+      toast('🎙 Das Mikro hat aufgehört zu hören – tippe noch mal auf 🎙');
+    } else if (micMode.type === 'slot' && ctx.currentTime - micMode.t > 3.4) finishSlot();
+    else if (micMode.type === 'loop' && micMode.state === 'rec' && ctx.currentTime > micMode.end + micLatency() + 0.7) finishLoop();
+  }
+  drawMicOverlay();
   const ms = micMode ? micMode.type + (micMode.state || '') : '';
   if (ms !== micShown){ renderStatus(); renderTracks(); }
   requestAnimationFrame(frame);
