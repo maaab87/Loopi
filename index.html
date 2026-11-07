@@ -113,6 +113,7 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
 .soundBanner{display:flex;align-items:center;gap:12px;text-align:left;background:#FFB020;color:#2B2340;border-radius:18px;padding:12px 16px;font-size:28px;box-shadow:0 4px 0 #D98E00}
 .soundBanner span{font-size:16px;line-height:1.25}
 .soundBanner small{font-size:13px;font-weight:500}
+.ver{text-align:center;font-size:12px;color:var(--soft)}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%) translateY(80px);background:var(--ink);color:#fff;padding:10px 16px;border-radius:14px;font-weight:700;transition:transform .25s;z-index:5;max-width:90vw;text-align:center}
 .toast.show{transform:translateX(-50%) translateY(0)}
 @media (max-width:420px){
@@ -177,10 +178,11 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
     </div>
   </div>
 
-  <div class="tools">
+  <div class="tools" data-v="7">
     <button class="tool" id="undoBtn">↩️ Rückgängig</button>
     <button class="tool" id="clearAllBtn">🧹 Alles löschen</button>
   </div>
+  <div class="ver">Loopi · Version 7</div>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -217,7 +219,7 @@ function silentWavUrl(){
 }
 function unlockAudio(){
   try {
-    if (navigator.audioSession) navigator.audioSession.type = 'playback'; // iOS 17+: ignoriert Stumm-Schalter
+    if (navigator.audioSession && !micWanted) navigator.audioSession.type = 'playback'; // iOS 17+: ignoriert Stumm-Schalter (nur solange kein Mikro gebraucht wird)
   } catch (e) {}
   initAudio();
   // iPhone-Trick: ein stummes <audio> schaltet die Audio-Sitzung auf "Wiedergabe"
@@ -357,11 +359,21 @@ async function loadCustom(i, file){
 }
 
 /* ================= Mikrofon ================= */
+let micWanted = false;
 let micStream = null, micProc = null, micChunks = [], micMode = null, micShown = '';
 async function getMic(){
   if (micStream) return;
   if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('nomic');
-  micStream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true, noiseSuppression:false, autoGainControl:true}});
+  // iPhone: "playback" verhindert Aufnahmen – für das Mikro auf Wiedergabe+Aufnahme umschalten
+  micWanted = true;
+  try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch (e) {}
+  if (silentEl && !silentEl.paused) { try { silentEl.pause(); } catch (e) {} }
+  const st = document.getElementById('status');
+  st.className = 'status rec'; st.textContent = '🎙 Warte auf die Mikrofon-Freigabe … (bitte „Erlauben“ tippen)';
+  const ask = navigator.mediaDevices.getUserMedia({audio:true});
+  const timeout = new Promise((_, rej) => setTimeout(() => rej({name:'Timeout'}), 12000));
+  micStream = await Promise.race([ask, timeout]);
+  if (ctx.state !== 'running') { try { await ctx.resume(); } catch (e) {} }
   const src = ctx.createMediaStreamSource(micStream);
   micProc = ctx.createScriptProcessor(4096, 1, 1);
   const silent = ctx.createGain(); silent.gain.value = 0;
@@ -389,6 +401,11 @@ function micError(err){
     html = `<b>🎙 Kein Mikrofon gefunden.</b><br>Ist ein Bluetooth-Kopfhörer verbunden? Einmal trennen und neu laden.`;
   } else if (name === 'NotReadableError' || name === 'AbortError'){
     html = `<b>🎙 Das Mikrofon ist gerade besetzt.</b><br>Läuft ein Anruf, FaceTime oder eine Sprachaufnahme? Beenden und noch mal 🎙 tippen.`;
+  } else if (name === 'Timeout'){
+    html = `<b>🎙 Das iPhone antwortet nicht auf die Mikrofon-Anfrage.</b>
+      <ul><li>Safari ganz schließen (in der App-Übersicht nach oben wischen) und neu öffnen.</li>
+      <li><b>Einstellungen → Bildschirmzeit → Beschränkungen → Mikrofon</b> prüfen, falls Bildschirmzeit aktiv ist.</li>
+      <li>Dann Seite laden und 🎙 tippen.</li></ul>`;
   } else {
     html = `<b>🎙 Das Mikrofon startet nicht.</b><br>Seite neu laden und noch mal 🎙 tippen. Mit 📁 bei „🎤 Eigene“ kannst du alternativ eine Aufnahme laden.`;
   }
