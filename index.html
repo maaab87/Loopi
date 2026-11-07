@@ -194,9 +194,9 @@ h2 small{font-weight:500;color:var(--soft);font-size:14px}
     <button class="tool" id="undoBtn">↩️ Rückgängig</button>
     <button class="tool" id="clearAllBtn">🧹 Alles löschen</button>
   </div>
-  <div class="ver">Loopi · Version 10<br><span id="diagLine"></span></div>
+  <div class="ver">Loopi · Version 11<br><span id="diagLine"></span></div>
 </div>
-<div class="micOverlay" id="micOverlay"><div class="big"></div><div class="sub"></div><div class="lvl"><i></i></div><div class="prog"><i></i></div><div class="hint">Grüner Balken = das Mikro hört dich</div></div>
+<div class="micOverlay" id="micOverlay"><div class="big"></div><div class="sub"></div><div class="lvl"><i></i></div><div class="prog"><i></i></div><div class="hint">Grüner Balken = das Mikro hört dich · 🎧 Kopfhörer = sauberste Aufnahme</div></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -209,7 +209,7 @@ function initAudio(){
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   const comp = ctx.createDynamicsCompressor();
   comp.threshold.value = -14; comp.ratio.value = 4;
-  master = ctx.createGain(); master.gain.value = 0.85;
+  master = ctx.createGain(); master.gain.value = MASTER;
   master.connect(comp); comp.connect(ctx.destination);
   noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
   const d = noiseBuf.getChannelData(0);
@@ -331,6 +331,22 @@ function decode(ab){
     if (p && p.then) p.then(res, rej);
   });
 }
+function gate(d, sr){
+  let peak = 0; for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i]));
+  if (peak < 0.01) return;
+  const win = Math.max(64, Math.floor(sr * 0.01)), nW = Math.ceil(d.length / win), thr = Math.max(0.015, peak * 0.22);
+  const open = new Float32Array(nW);
+  for (let w = 0; w < nW; w++){ let m = 0; for (let i = w * win; i < Math.min(d.length, (w + 1) * win); i++) m = Math.max(m, Math.abs(d[i])); open[w] = m > thr ? 1 : 0; }
+  // Haltezeit 80 ms nach hinten, 20 ms nach vorn
+  const hold = Math.round(0.08 / 0.01), pre = 2, g = new Float32Array(nW);
+  for (let w = 0; w < nW; w++) if (open[w]) for (let k = Math.max(0, w - pre); k <= Math.min(nW - 1, w + hold); k++) g[k] = 1;
+  // weich glätten, damit es nicht klickt
+  let cur = 0;
+  for (let w = 0; w < nW; w++){
+    const target = g[w] ? 1 : 0.04;
+    for (let i = w * win; i < Math.min(d.length, (w + 1) * win); i++){ cur += (target - cur) * (target > cur ? 0.02 : 0.004); d[i] *= cur; }
+  }
+}
 function trimBuffer(buf){
   const sr = buf.sampleRate, ch0 = buf.getChannelData(0);
   let peak = 0; for (let i = 0; i < ch0.length; i++) peak = Math.max(peak, Math.abs(ch0[i]));
@@ -389,8 +405,12 @@ function resetMic(){
   try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
   micStream = null; micSrc = null; micProc = null;
 }
+const DUCK = 0.2, MASTER = 0.85;
+function duck(at){ if (!master) return; const g = master.gain; g.cancelScheduledValues(ctx.currentTime); g.setValueAtTime(g.value, ctx.currentTime); g.setTargetAtTime(MASTER * DUCK, Math.max(ctx.currentTime, at), 0.03); }
+function unduck(at){ if (!master) return; const g = master.gain; const t = Math.max(ctx.currentTime, at || 0); g.cancelScheduledValues(ctx.currentTime); g.setValueAtTime(g.value, ctx.currentTime); g.setTargetAtTime(MASTER, t, 0.05); }
 function releaseMic(){
   resetMic(); micWanted = false; micClock = null;
+  unduck();
   try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
   if (silentEl && silentEl.paused) silentEl.play().catch(() => {});
   if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
@@ -405,7 +425,8 @@ async function getMic(){
   if (silentEl && !silentEl.paused) { try { silentEl.pause(); } catch (e) {} }
   const st = document.getElementById('status');
   st.className = 'status rec'; st.textContent = '🎙 Warte auf die Mikrofon-Freigabe … (bitte „Erlauben“ tippen)';
-  const ask = navigator.mediaDevices.getUserMedia({audio:true});
+  const ask = navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true, noiseSuppression:true, autoGainControl:true}})
+    .catch(e => (e && e.name === 'OverconstrainedError') ? navigator.mediaDevices.getUserMedia({audio:true}) : Promise.reject(e));
   const timeout = new Promise((_, rej) => setTimeout(() => rej({name:'Timeout'}), 12000));
   const stream = await Promise.race([ask, timeout]);
   try {
@@ -490,6 +511,7 @@ async function toggleSlotRec(i){
   if (micMode) return;
   try { await getMic(); } catch (e) { micError(e); return; }
   micChunks = []; micMode = {type:'slot', i, t: micClock !== null ? micClock : ctx.currentTime};
+  duck(ctx.currentTime);
   renderPads(); renderStatus();
 }
 function finishSlot(){
@@ -502,6 +524,7 @@ function finishSlot(){
   releaseMic();
   if (peak < 0.01){ toast('🤔 Ich habe nichts gehört – noch mal lauter!'); renderPads(); renderStatus(); return; }
   const name = tracks[m.i].name + '-Ton';
+  gate(raw.getChannelData(0), raw.sampleRate);
   customs[m.i] = {buf: trimBuffer(raw), name}; SOUNDS['u'+m.i].l = name;
   renderPads(); renderStatus();
   playSound('u'+m.i, ctx.currentTime + 0.05, liveGain);
@@ -520,6 +543,7 @@ async function toggleLoopRec(i){
   let s0 = nextTime + ((STEPS - nextAbs % STEPS) % STEPS) * sd;
   while (s0 - ctx.currentTime < 8 * sd) s0 += STEPS * sd;
   micChunks = []; micMode = {type:'loop', track:i, state:'wait', start:s0, end:s0 + STEPS * sd};
+  duck(s0 - 0.03);
   renderTracks(); renderStatus();
 }
 function finishLoop(){
@@ -528,6 +552,7 @@ function finishLoop(){
   m.n = micChunks.filter(c => c.t0 + c.data.length / ctx.sampleRate > m.start + lat && c.t0 < m.end + lat).length;
   const buf = grab(m.start + lat, m.end + lat); micChunks = [];
   const d = buf.getChannelData(0), sr = ctx.sampleRate, fade = Math.floor(sr * 0.006);
+  gate(d, sr);
   let peak = 0; for (let k = 0; k < d.length; k++) peak = Math.max(peak, Math.abs(d[k]));
   const g = peak > 0.01 ? Math.min(4, 0.8 / peak) : 1;
   for (let k = 0; k < d.length; k++){
@@ -596,7 +621,7 @@ function scheduleStep(step, t){
   if (step === 0){
     loopStartTime = t;
     if (micMode && micMode.type === 'loop' && micMode.state === 'wait' && t > micMode.start - stepDur() / 2){
-      micMode.state = 'armed'; micMode.start = t; micMode.end = t + STEPS * stepDur();
+      micMode.state = 'armed'; micMode.start = t; micMode.end = t + STEPS * stepDur(); duck(t - 0.03);
     }
     tracks.forEach(tr => {
       if (!tr.audio || tr.muted) return;
